@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv sync 2)",
+      "Edit(agent/**)"
+    ]
+  }
+}

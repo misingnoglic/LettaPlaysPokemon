@@ -1,56 +1,92 @@
-# Claude Plays Pokemon - Starter Version
+# Letta Plays Pokemon
 
-A minimal implementation of Claude playing Pokemon Red using the PyBoy emulator. This starter version includes:
+A [Letta](https://letta.com) agent learns to play Pokemon Red on a Game Boy
+emulator -- with persistent, editable memory blocks instead of a manually
+managed conversation history.
 
-- Simple agent that uses Claude to play Pokemon Red
-- Memory reading functionality to extract game state information
-- Basic emulator control through Claude's function calling
+This is a fork of [Claude Plays Pokemon](https://github.com/davidhershey/ClaudePlaysPokemonStarter)
+with the Anthropic API call replaced by Letta. The agent starts knowing almost
+nothing about Pokemon and is expected to learn by talking to NPCs, reading
+signs, and writing what it discovers into its own memory blocks.
+
+## How it works
+
+A simple loop in `main.py` drives the experiment:
+
+1. Capture a screenshot, RAM-derived game state, and a collision map from PyBoy.
+2. Send those to the Letta agent as a single user message.
+3. The agent reasons, optionally edits its own memory blocks, and replies with
+   a fenced ```json block describing its next action.
+4. We parse the action and execute it on the emulator.
+5. Loop.
+
+The agent has these memory blocks (defined in `agent/persona.py`):
+
+- `persona` -- identity, button semantics, and the action protocol
+- `goals` -- what it's trying to do
+- `current_team`, `boxed_pokemon`, `items` -- inventory it's learned about
+- `active_battle` -- opponent + strategy during battles
+- `action_trajectory` -- rolling buffer of recent actions (anti-loop)
+- `map_knowledge`, `npc_notes`, `lessons_learned` -- accumulated game knowledge
+
+Most blocks start empty. The agent fills them in as it plays.
 
 ## Setup
 
-1. Clone this repository
-2. Install the required packages:
-   ```
-   pip install -r requirements.txt
-   ```
-3. Set up your Anthropic API key as an environment variable:
-   ```
-   export ANTHROPIC_API_KEY=your_api_key_here
-   ```
+Requires [`uv`](https://docs.astral.sh/uv/) and a [Letta Cloud](https://app.letta.com)
+API key.
 
-4. Place your Pokemon Red ROM file in the root directory (you need to provide your own ROM)
-
-## Usage
-
-Run the main script:
-
-```
-python main.py
+```bash
+uv sync
+cp .env.example .env
+# edit .env and set LETTA_API_KEY
 ```
 
-Optional arguments:
-- `--rom`: Path to the Pokemon ROM file (default: `pokemon.gb` in the root directory)
-- `--steps`: Number of agent steps to run (default: 10)
-- `--display`: Run with display (not headless)
-- `--sound`: Enable sound (only applicable with display)
+Place a Pokemon Red ROM at `pokemon.gb` in the project root (you provide your
+own ROM).
 
-Example:
-```
-python main.py --rom pokemon.gb --steps 20 --display --sound
+## Run
+
+```bash
+uv run python main.py --steps 50
 ```
 
-## Implementation Details
+Optional flags:
 
-### Components
+- `--rom PATH` -- path to the ROM (default: `pokemon.gb`)
+- `--steps N` -- number of agent turns (default: 10)
+- `--display` -- show the emulator window
+- `--sound` -- enable sound (only with `--display`)
+- `--load-state PATH` -- load a PyBoy save state
 
-- `agent/simple_agent.py`: Main agent class that uses Claude to play Pokemon
-- `agent/emulator.py`: Wrapper around PyBoy with helper functions
-- `agent/memory_reader.py`: Extracts game state information from emulator memory
+Each run creates a **fresh** Letta agent. The agent ID is logged at startup;
+you can inspect its memory blocks at `https://app.letta.com/agents/<agent_id>`.
 
-### How It Works
+## Configuration
 
-1. The agent captures a screenshot from the emulator
-2. It reads the game state information from memory
-3. It sends the screenshot and game state to Claude
-4. Claude responds with explanations and emulator commands
-5. The agent executes the commands and repeats the process
+`config.py` controls:
+
+- `LETTA_MODEL` -- model handle (default: `anthropic/claude-opus-4-7`; fall
+  back to `anthropic/claude-opus-4-6` if 4.7 isn't available on your account)
+- `LETTA_EMBEDDING` -- embedding model
+- `CONTEXT_WINDOW_LIMIT` -- max in-context size
+- `USE_NAVIGATOR` -- enable A\* `navigate_to` action
+
+## Layout
+
+```
+agent/
+  emulator.py       PyBoy wrapper (button presses, screenshot, collision map)
+  memory_reader.py  Pokemon Red RAM lookups
+  persona.py        Persona text + INITIAL_BLOCKS for the Letta agent
+  letta_agent.py    Main loop driver (Shape A: we drive, agent decides)
+config.py           Model and run configuration
+main.py             CLI entry point
+```
+
+## Future work: Letta tools (Shape B)
+
+Today the agent emits structured JSON which we parse and dispatch. The
+dispatch handlers in `letta_agent.py` are deliberately isolated so they can
+be wrapped as Letta tools later, letting the agent call them directly with
+no JSON parsing on our side.
