@@ -13,5 +13,9 @@ CONTEXT_WINDOW_LIMIT = 32000
 # Whether to expose the navigate_to action (A* pathfinder over the collision map).
 USE_NAVIGATOR = False
 
+# Whether to expose the soft_reset action. When False, the dispatch path is
+# disabled and the persona does not document it.
+USE_SOFT_RESET = False
+
 # Default number of agent steps if --steps is not passed.
 MAX_STEPS_DEFAULT = 10

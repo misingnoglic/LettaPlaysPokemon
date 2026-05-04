@@ -53,35 +53,72 @@ class Emulator:
         """
         self.pyboy.load_state(open(state_filename, "rb"))
 
+    def save_state(self, state_filename):
+        """Write the emulator's current state to a file."""
+        with open(state_filename, "wb") as f:
+            self.pyboy.save_state(f)
+
     def press_buttons(self, buttons, wait=True):
         """Press a sequence of buttons on the Game Boy.
-        
+
         Args:
             buttons (list[str]): List of buttons to press in sequence
             wait (bool): Whether to wait after each button press
-            
+
         Returns:
             str: Result of the button presses
         """
+        result, _ = self.press_buttons_with_frames(buttons, wait)
+        return result
+
+    def press_buttons_with_frames(self, buttons, wait=True):
+        """Like press_buttons, but also captures a screenshot immediately
+        after each button is released (before the post-press wait).
+
+        Returns:
+            tuple[str, list[PIL.Image.Image]]: (result string, frames list)
+        """
         results = []
-        
+        frames = []
+
         for button in buttons:
             if button not in ["a", "b", "start", "select", "up", "down", "left", "right"]:
                 results.append(f"Invalid button: {button}")
                 continue
-                
+
             self.pyboy.button_press(button)
             self.tick(10)   # Press briefly
             self.pyboy.button_release(button)
-            
+
             if wait:
-                self.tick(120) # Wait longer after button release
+                self.tick(120)  # Wait longer after button release
             else:
                 self.tick(10)   # Brief pause between button presses
-                
+
+            # Capture frame after the wait so animations / dialog have
+            # had time to advance. Copy the array because pyboy.screen.ndarray
+            # is a live view that gets overwritten on subsequent ticks.
+            frames.append(Image.fromarray(self.pyboy.screen.ndarray.copy()))
+
             results.append(f"Pressed {button}")
-        
-        return "\n".join(results)
+
+        return "\n".join(results), frames
+
+    def soft_reset(self):
+        """Perform a Game Boy soft reset (A + B + Start + Select held ~1 second).
+
+        Returns the player to the title screen. The next time the player
+        chooses CONTINUE, the most recent in-game save is loaded. Any
+        progress since the last save is lost.
+        """
+        held = ["a", "b", "start", "select"]
+        for b in held:
+            self.pyboy.button_press(b)
+        self.tick(60)  # hold for ~1 second
+        for b in held:
+            self.pyboy.button_release(b)
+        self.tick(120)  # let the title screen settle
+        return "Soft reset performed. Game returned to title screen."
 
     def get_coordinates(self):
         """
@@ -486,55 +523,75 @@ class Emulator:
         )
 
     def get_state_from_memory(self) -> str:
-        """
-        Reads the game state from memory and returns a string representation of it.
+        """Per-step game state. Only fast-moving, always-relevant fields.
+
+        Slow-moving fields (party, inventory+money, badges) are surfaced
+        separately by the driver so they can be echoed only on change.
         """
         reader = PokemonRedReader(self.pyboy.memory)
-        memory_str = ""
+        lines: list[str] = []
 
-        name = reader.read_player_name()
-        if name == "NINTEN":
-            name = "Not yet set"
-        rival_name = reader.read_rival_name()
-        if rival_name == "SONY":
-            rival_name = "Not yet set"
+        lines.append(f"Location: {reader.read_location()}")
+        lines.append(f"Coordinates: {reader.read_coordinates()}")
 
-        # Get valid moves
-        valid_moves = self.get_valid_moves()
-        valid_moves_str = ", ".join(valid_moves) if valid_moves else "None"
-
-        memory_str += f"Player: {name}\n"
-        memory_str += f"Rival: {rival_name}\n"
-        memory_str += f"Money: ${reader.read_money()}\n"
-        memory_str += f"Location: {reader.read_location()}\n"
-        memory_str += f"Coordinates: {reader.read_coordinates()}\n"
-        memory_str += f"Valid Moves: {valid_moves_str}\n"
-        memory_str += f"Badges: {', '.join(reader.read_badges())}\n"
-
-        # Inventory
-        memory_str += "Inventory:\n"
-        for item, qty in reader.read_items():
-            memory_str += f"  {item} x{qty}\n"
-
-        # Dialog
         dialog = reader.read_dialog()
         if dialog:
-            memory_str += f"Dialog: {dialog}\n"
+            lines.append(f"Dialog: {dialog}")
+
+        return "\n".join(lines) + "\n"
+
+    def get_inventory_state(self) -> str:
+        """Money + bag contents, formatted. Stable across ticks."""
+        reader = PokemonRedReader(self.pyboy.memory)
+        lines = [f"Money: ${reader.read_money()}"]
+        items = list(reader.read_items())
+        if items:
+            lines.append("Items:")
+            for item, qty in items:
+                lines.append(f"  {item} x{qty}")
         else:
-            memory_str += "Dialog: None\n"
+            lines.append("Items: (none)")
+        return "\n".join(lines) + "\n"
 
-        # Party Pokemon
-        memory_str += "\nPokemon Party:\n"
-        for pokemon in reader.read_party_pokemon():
-            memory_str += f"\n{pokemon.nickname} ({pokemon.species_name}):\n"
-            memory_str += f"Level {pokemon.level} - HP: {pokemon.current_hp}/{pokemon.max_hp}\n"
-            memory_str += f"Types: {pokemon.type1.name}{', ' + pokemon.type2.name if pokemon.type2 else ''}\n"
+    def get_badges_state(self) -> str:
+        """Badges earned. Empty string if none yet."""
+        reader = PokemonRedReader(self.pyboy.memory)
+        badges = [b for b in reader.read_badges() if b]
+        if not badges:
+            return ""
+        return "Badges: " + ", ".join(badges) + "\n"
+
+    def get_party_state(self) -> str:
+        """Formatted party Pokemon state. Empty string if no party yet."""
+        reader = PokemonRedReader(self.pyboy.memory)
+        party = list(reader.read_party_pokemon())
+        if not party:
+            return ""
+        lines: list[str] = []
+        for pokemon in party:
+            lines.append(f"\n{pokemon.nickname} ({pokemon.species_name}):")
+            lines.append(
+                f"Level {pokemon.level} - HP: {pokemon.current_hp}/{pokemon.max_hp}"
+            )
+            type_str = pokemon.type1.name + (
+                f", {pokemon.type2.name}" if pokemon.type2 else ""
+            )
+            lines.append(f"Types: {type_str}")
             for move, pp in zip(pokemon.moves, pokemon.move_pp, strict=True):
-                memory_str += f"- {move} (PP: {pp})\n"
+                lines.append(f"- {move} (PP: {pp})")
             if pokemon.status != StatusCondition.NONE:
-                memory_str += f"Status: {pokemon.status.get_status_name()}\n"
+                lines.append(f"Status: {pokemon.status.get_status_name()}")
+        return "\n".join(lines).strip() + "\n"
 
-        return memory_str
+    def get_player_identity(self) -> tuple[str | None, str | None]:
+        """Player and rival names if set, else (None, None) for either slot."""
+        reader = PokemonRedReader(self.pyboy.memory)
+        name = reader.read_player_name()
+        rival = reader.read_rival_name()
+        return (
+            None if name == "NINTEN" else name,
+            None if rival == "SONY" else rival,
+        )
 
     def stop(self):
         self.pyboy.stop()

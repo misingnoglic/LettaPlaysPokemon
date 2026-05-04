@@ -48,3 +48,6 @@ ENV/
 
 # System
 .DS_Store
+
+# Saved sessions (PyBoy state + agent_id)
+sessions/
